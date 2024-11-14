@@ -37,7 +37,12 @@ def term_size_px():
     with suppress(OSError):
         buf = array.array('H', [0, 0, 0, 0])
         fcntl.ioctl(sys.stdout, termios.TIOCGWINSZ, buf)
-        _, _, width_px, height_px = buf
+        height_rows, _, width_px, height_px = buf
+
+    # Remove the height of 3 rows (prompt, newline and possible `<matplotlib.axes>...`
+    if height_rows > 0 and height_px != 0:
+        row_height = height_px / height_rows
+        height_px -= int(3 * row_height)
 
     if width_px != 0 and height_px != 0:
         return height_px, width_px
@@ -107,15 +112,27 @@ class FigureManagerICat(FigureManagerBase):
         return f
 
     def show(self):
-        if os.environ.get('MPLBACKEND_KITTY_SIZING', 'automatic') != 'manual':
+        sizing_strategy = os.environ.get('MPLBACKEND_KITTY_SIZING', 'preserve_aspect_ratio')
+        if sizing_strategy in ['automatic', 'preserve_aspect_ratio']:
 
             # gather terminal dimensions
             term_height_px, term_width_px = term_size_px()
-
-            # resize figure to terminal size & aspect ratio
             ipd = 1 / self.canvas.figure.dpi
             term_width_inch, term_height_inch = term_width_px * ipd, term_height_px * ipd
-            self.canvas.figure.set_size_inches(term_width_inch, term_height_inch)
+
+            if sizing_strategy == 'automatic':
+                # resize figure to terminal size & aspect ratio
+                self.canvas.figure.set_size_inches(term_width_inch, term_height_inch)
+            else:
+                fig_w, fig_h = self.canvas.figure.get_size_inches()
+                # Try to fit width
+                new_w = term_width_inch
+                new_h = new_w * fig_h / fig_w
+                if new_h > term_height_inch:
+                    # Fit height
+                    new_h = term_height_inch
+                    new_w = new_h * fig_w / fig_h
+                self.canvas.figure.set_size_inches(new_w, new_h)
 
         with BytesIO() as buf:
             self.canvas.figure.savefig(buf, format='png')
