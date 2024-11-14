@@ -13,10 +13,17 @@ from base64 import standard_b64encode
 from contextlib import suppress
 from subprocess import run
 
+import matplotlib as mpl
 from matplotlib import interactive, is_interactive
 from matplotlib._pylab_helpers import Gcf
 from matplotlib.backend_bases import (_Backend, FigureManagerBase)
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+try:
+    from IPython import get_ipython
+except ModuleNotFoundError:
+    def get_ipython():
+        return None
 
 
 # XXX heuristic for interactive repl
@@ -129,6 +136,9 @@ class _BackendICatAgg(_Backend):
     # this is an "interactive" backend
     mainloop = lambda: None
 
+    _to_show = []
+    _draw_called = False
+
     # XXX: `draw_if_interactive` isn't really intended for
     # on-shot rendering. We run the risk of being called
     # on a figure that isn't completely rendered yet, so
@@ -145,3 +155,57 @@ class _BackendICatAgg(_Backend):
     def show(cls, *args, **kwargs):
         _Backend.show(*args, **kwargs)
         Gcf.destroy_all()
+
+    @staticmethod
+    def new_figure_manager_given_figure(num, figure):
+        # From ipympl code
+        canvas = FigureCanvasICat(figure)
+        manager = FigureManagerICat(canvas, num)
+        if is_interactive():
+            _BackendICatAgg._to_show.append(figure)
+            figure.canvas.draw_idle()
+
+        def destroy(event):
+            canvas.mpl_disconnect(cid)
+
+        cid = canvas.mpl_connect('close_event', destroy)
+
+        # Only register figure for showing when in interactive mode (otherwise
+        # we'll generate duplicate plots, since a user who set ioff() manually
+        # expects to make separate draw/show calls).
+        if is_interactive():
+            # ensure current figure will be drawn.
+            try:
+                _BackendICatAgg._to_show.remove(figure)
+            except ValueError:
+                # ensure it only appears in the draw list once
+                pass
+            # Queue up the figure for drawing in next show() call
+            _BackendICatAgg._to_show.append(figure)
+            _BackendICatAgg._draw_called = True
+
+        return manager
+
+def flush_figures():
+    # Adapted from ipympl code
+    backend = mpl.get_backend()
+    if backend == 'module://matplotlib-backend-kitty':
+        if not _BackendICatAgg._draw_called:
+            return
+
+        try:
+            # exclude any figures that were closed:
+            active = {fm.canvas.figure for fm in Gcf.get_all_fig_managers()}
+
+            for fig in [
+                    fig for fig in _BackendICatAgg._to_show if fig in active
+            ]:
+                fig.show()
+        finally:
+            # clear flags for next round
+            _BackendICatAgg._to_show = []
+            _BackendICatAgg._draw_called = False
+
+ip = get_ipython()
+if ip is not None:
+    ip.events.register('post_execute', flush_figures)
